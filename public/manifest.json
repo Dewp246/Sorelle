@@ -1,0 +1,10 @@
+{
+  "name": "sorelle",
+  "short_name": "Sorelle",
+  "description": "Marketplace produk kurasi rumah, dapur, dan artisan lokal.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fff8f5",
+  "theme_color": "#fff8f5",
+  "icons": []
+}
