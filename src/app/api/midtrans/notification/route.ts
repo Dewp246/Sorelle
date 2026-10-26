@@ -46,7 +46,8 @@ export async function POST(request: Request) {
 
   if (orderErr || !order) {
     console.warn(`Order not found for notification: ${orderId}`);
-    return NextResponse.json({ message: 'Order tidak ditemukan' }, { status: 404 });
+    // Acknowledge receipt so Midtrans stops retrying, but do not change any data.
+    return NextResponse.json({ ok: true, message: 'Order tidak dikenal, notifikasi diabaikan.' });
   }
 
   const isPaid =
