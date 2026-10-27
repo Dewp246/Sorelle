@@ -8,6 +8,128 @@ export const runtime = 'nodejs';
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+/**
+ * Maximum number of orders returned per history request. Row level security
+ * already scopes every read to the caller; this only keeps the payload bounded.
+ */
+const HISTORY_LIMIT = 30;
+
+/** Columns needed to render the account order list and its detail summary. */
+const ORDER_SELECT =
+  'id,order_number,status,subtotal_idr,shipping_idr,discount_idr,total_idr,courier,tracking_number,customer_note,shipping_name,shipping_phone,shipping_address,paid_at,delivered_at,created_at,order_items(id,product_id,product_name,unit_price_idr,quantity,line_total_idr,products(image_url))';
+
+type OrderItemRow = {
+  id: string;
+  product_id: string | null;
+  product_name: string;
+  unit_price_idr: number;
+  quantity: number;
+  line_total_idr: number;
+  products: { image_url: string | null } | { image_url: string | null }[] | null;
+};
+
+type OrderRow = {
+  id: string;
+  order_number: string;
+  status: string;
+  subtotal_idr: number;
+  shipping_idr: number;
+  discount_idr: number;
+  total_idr: number;
+  courier: string | null;
+  tracking_number: string | null;
+  customer_note: string | null;
+  shipping_name: string;
+  shipping_phone: string;
+  shipping_address: Record<string, unknown> | null;
+  paid_at: string | null;
+  delivered_at: string | null;
+  created_at: string;
+  order_items: OrderItemRow[] | null;
+};
+
+/** Embedded relations may be returned as an object or a single-element array. */
+function productImageUrl(relation: OrderItemRow['products']): string | null {
+  if (Array.isArray(relation)) return relation[0]?.image_url ?? null;
+  return relation?.image_url ?? null;
+}
+
+/**
+ * Order history for the signed-in customer.
+ *
+ * GET /api/orders               → the most recent orders of the caller
+ * GET /api/orders?orderNumber=… → a single order of the caller
+ *
+ * Auth mirrors /api/tracking: the caller's Supabase access token is forwarded as
+ * a bearer token, and row level security restricts reads to their own orders.
+ */
+export async function GET(request: Request) {
+  const token = request.headers.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!token) return NextResponse.json({ error: 'Masuk terlebih dahulu.' }, { status: 401 });
+  if (!url || !anonKey) return NextResponse.json({ error: 'Supabase belum dikonfigurasi.' }, { status: 500 });
+
+  const client = createClient(url, anonKey, {
+    auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+    global: { headers: { Authorization: `Bearer ${token}` } },
+  });
+  const { data: { user }, error: authError } = await client.auth.getUser(token);
+  if (authError || !user) return NextResponse.json({ error: 'Sesi tidak valid.' }, { status: 401 });
+
+  const { searchParams } = new URL(request.url);
+  const orderNumber = searchParams.get('orderNumber')?.trim();
+
+  let query = client
+    .from('orders')
+    .select(ORDER_SELECT)
+    .eq('customer_id', user.id)
+    .order('created_at', { ascending: false });
+
+  query = orderNumber ? query.eq('order_number', orderNumber).limit(1) : query.limit(HISTORY_LIMIT);
+
+  const { data, error } = await query;
+  if (error) {
+    console.error('order history query failed', { code: error.code, message: error.message });
+    return NextResponse.json({ error: 'Riwayat pesanan belum dapat dimuat.' }, { status: 503 });
+  }
+
+  const orders = ((data ?? []) as unknown as OrderRow[]).map((row) => ({
+    id: row.id,
+    order_number: row.order_number,
+    status: row.status,
+    subtotal_idr: row.subtotal_idr,
+    shipping_idr: row.shipping_idr,
+    discount_idr: row.discount_idr,
+    total_idr: row.total_idr,
+    courier: row.courier,
+    tracking_number: row.tracking_number,
+    customer_note: row.customer_note,
+    shipping_name: row.shipping_name,
+    shipping_phone: row.shipping_phone,
+    shipping_address: row.shipping_address ?? {},
+    paid_at: row.paid_at,
+    delivered_at: row.delivered_at,
+    created_at: row.created_at,
+    items: (row.order_items ?? []).map((item) => ({
+      id: item.id,
+      product_id: item.product_id,
+      product_name: item.product_name,
+      unit_price_idr: item.unit_price_idr,
+      quantity: item.quantity,
+      line_total_idr: item.line_total_idr,
+      image_url: productImageUrl(item.products),
+    })),
+  }));
+
+  return NextResponse.json({
+    orders,
+    limit: HISTORY_LIMIT,
+    hasMore: !orderNumber && orders.length === HISTORY_LIMIT,
+  }, { headers: { 'Cache-Control': 'no-store' } });
+}
+
 export async function POST(request: Request) {
   const token = request.headers.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;

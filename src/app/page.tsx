@@ -1,17 +1,45 @@
 "use client";
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { DEFAULT_COURIER_ID } from '@/lib/shipping';
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, Check, ChevronDown,
   ChevronRight, Clock3, CreditCard, Heart, House, Leaf,
-  MapPin, Menu, Minus, PackageCheck, Plus, Search, ShieldCheck, ShoppingBag,
+  MapPin, Menu, Minus, PackageCheck, Plus, RefreshCw, Search, ShieldCheck, ShoppingBag,
   SlidersHorizontal, Sparkles, Star, Truck, UserRound, X,
 } from 'lucide-react';
 
 type View = 'home' | 'catalog' | 'product' | 'cart' | 'checkout' | 'complete' | 'review' | 'tracking' | 'account' | 'login';
 type Product = { id: string; name: string; description: string; price: number; oldPrice?: number; category: string; image: string; stock: number };
+type OrderHistoryItem = {
+  id: string;
+  product_id: string | null;
+  product_name: string;
+  unit_price_idr: number;
+  quantity: number;
+  line_total_idr: number;
+  image_url: string | null;
+};
+type OrderHistoryOrder = {
+  id: string;
+  order_number: string;
+  status: string;
+  subtotal_idr: number;
+  shipping_idr: number;
+  discount_idr: number;
+  total_idr: number;
+  courier: string | null;
+  tracking_number: string | null;
+  customer_note: string | null;
+  shipping_name: string;
+  shipping_phone: string;
+  shipping_address: Record<string, unknown>;
+  paid_at: string | null;
+  delivered_at: string | null;
+  created_at: string;
+  items: OrderHistoryItem[];
+};
 const demoProducts: Product[] = [
   { id: 'demo-1', name: 'Teko Keramik Warm Earth Infuser 800ml', description: 'Handcrafted terracotta finish · Kasongan', price: 289000, oldPrice: 345000, category: 'Rumah & Dapur', image: 'https://images.unsplash.com/photo-1578749556568-bc2c40e68b61?auto=format&fit=crop&w=900&q=85', stock: 8 },
   { id: 'demo-2', name: 'Set 2 Cangkir Keramik Stoneware', description: 'Sepasang cangkir buatan tangan', price: 178000, category: 'Rumah & Dapur', image: 'https://images.unsplash.com/photo-1514228742587-6b1558fcca3d?auto=format&fit=crop&w=900&q=85', stock: 14 },
@@ -25,6 +53,25 @@ const demoProducts: Product[] = [
 const demoCategories = ['Semua', 'Rumah & Dapur', 'Fashion', 'Kecantikan', 'Bahan Makanan', 'Gaya Hidup'];
 const money = (n: number) => `Rp ${n.toLocaleString('id-ID')}`;
 const views: Record<string, View> = { Beranda: 'home', Kategori: 'catalog', Favorit: 'catalog', Pesanan: 'tracking', Akun: 'account' };
+
+/** Human readable label for the `public.order_status` enum values. */
+const ORDER_STATUS_LABEL: Record<string, string> = {
+  pending_payment: 'Menunggu pembayaran',
+  paid: 'Dibayar',
+  processing: 'Disiapkan artisan',
+  shipped: 'Dikirim',
+  delivered: 'Terkirim',
+  completed: 'Selesai',
+  cancelled: 'Dibatalkan',
+  refunded: 'Dana dikembalikan',
+};
+
+/** Statuses that are still moving, so the order detail offers a tracking link. */
+const ACTIVE_ORDER_STATUSES = ['paid', 'processing', 'shipped', 'delivered'];
+
+const orderStatusLabel = (status: string) => ORDER_STATUS_LABEL[status] ?? status.replace(/_/g, ' ');
+
+const formatOrderDate = (value: string) => new Date(value).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
 
 export default function Sorelle() {
   const [view, setView] = useState<View>('home');
@@ -88,6 +135,17 @@ export default function Sorelle() {
   const [trackingLoading, setTrackingLoading] = useState(false);
   const [trackingSimulating, setTrackingSimulating] = useState(false);
 
+  const [orderHistory, setOrderHistory] = useState<OrderHistoryOrder[]>([]);
+  const [orderHistoryLoading, setOrderHistoryLoading] = useState(false);
+  const [orderHistoryError, setOrderHistoryError] = useState('');
+  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  const [historyReloadKey, setHistoryReloadKey] = useState(0);
+  /**
+   * Order the tracking page should focus on. Kept in a ref so the tracking
+   * effect can stay keyed to the view alone, like it always has been.
+   */
+  const trackingTargetRef = useRef('');
+
   useEffect(() => {
     if (!supabase) return;
     supabase.auth.getSession().then(({ data }) => setAuthUser(data.session?.user ?? null));
@@ -99,10 +157,58 @@ export default function Sorelle() {
   }, []);
 
   useEffect(() => {
-    if (view === 'tracking' && authUser) {
-      void loadTrackingData();
+    if (view !== 'tracking' || !authUser || !supabase) return;
+    let cancelled = false;
+    async function loadTracking() {
+      setTrackingLoading(true);
+      try {
+        const { data: { session } } = await supabase!.auth.getSession();
+        if (!session?.access_token) return;
+        const target = trackingTargetRef.current.trim();
+        const res = await fetch(`/api/tracking${target ? `?orderNumber=${encodeURIComponent(target)}` : ''}`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        const json = await res.json();
+        if (cancelled) return;
+        setTrackingOrder(json.order ?? null);
+        setTrackingEvents(Array.isArray(json.checkpoints) ? json.checkpoints : []);
+      } catch (err) {
+        console.error('Failed to load tracking data:', err);
+      } finally {
+        if (!cancelled) setTrackingLoading(false);
+      }
     }
+    void loadTracking();
+    return () => { cancelled = true; };
   }, [view, authUser]);
+
+  useEffect(() => {
+    if (view !== 'account' || !authUser) return;
+    let cancelled = false;
+    async function loadHistory() {
+      if (!supabase) return;
+      setOrderHistoryLoading(true);
+      setOrderHistoryError('');
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) throw new Error('Sesi berakhir. Masuk kembali untuk melihat riwayat pesanan.');
+        const res = await fetch('/api/orders', { headers: { Authorization: `Bearer ${session.access_token}` } });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? 'Riwayat pesanan belum dapat dimuat.');
+        if (cancelled) return;
+        setOrderHistory(Array.isArray(json.orders) ? json.orders : []);
+      } catch (error) {
+        if (!cancelled) {
+          setOrderHistory([]);
+          setOrderHistoryError(error instanceof Error ? error.message : 'Riwayat pesanan belum dapat dimuat.');
+        }
+      } finally {
+        if (!cancelled) setOrderHistoryLoading(false);
+      }
+    }
+    void loadHistory();
+    return () => { cancelled = true; };
+  }, [view, authUser, historyReloadKey]);
   useEffect(() => {
     const client = supabase;
     if (!client) return;
@@ -159,7 +265,7 @@ export default function Sorelle() {
     if (sort === 'Harga tertinggi') result = [...result].sort((a, b) => b.price - a.price);
     return result;
   }, [category, products, query, sort]);
-  const go = (v: View) => { setView(v); setMobileMenu(false); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+  const go = (v: View) => { trackingTargetRef.current = ''; setView(v); setMobileMenu(false); window.scrollTo({ top: 0, behavior: 'smooth' }); };
   const add = (id: string, amount = 1) => { setCart((current) => ({ ...current, [id]: Math.max(0, (current[id] ?? 0) + amount) })); setNotice(amount > 0 ? 'Ditambahkan ke keranjang' : 'Jumlah diperbarui'); window.setTimeout(() => setNotice(''), 2300); };
   const photo = (p: Product, variant: 'cover' | 'contain' = 'cover', className = '') => p.image ? <img src={p.image} alt={p.name} className={`${className} product-image ${variant}`} loading="lazy" /> : <span className="product-image-placeholder" role="img" aria-label={`Belum ada foto untuk ${p.name}`}><PackageCheck/></span>;
   const goProduct = (p: Product) => { setSelected(p); go('product'); };
@@ -258,27 +364,30 @@ export default function Sorelle() {
     }
   }
 
-  function triggerSnapPayment(token: string) {
+  function triggerSnapPayment(token: string, fallbackRedirectUrl?: string | null) {
     if (typeof window !== 'undefined' && window.snap) {
       window.snap.pay(token, {
         onSuccess: () => {
           setCreatedOrder((curr) => curr ? { ...curr, status: 'paid' } : null);
           setNotice('Pembayaran berhasil! Terima kasih.');
+          setHistoryReloadKey((key) => key + 1);
         },
         onPending: () => {
           setNotice('Menunggu penyelesaian pembayaran.');
+          setHistoryReloadKey((key) => key + 1);
         },
         onError: () => {
           setNotice('Pembayaran gagal atau dibatalkan.');
         },
         onClose: () => {
           setNotice('Sesi pembayaran ditutup. Anda dapat membayar kembali sebelum batas waktu.');
+          setHistoryReloadKey((key) => key + 1);
         },
       });
-    } else if (createdOrder?.snapRedirectUrl) {
-      window.open(createdOrder.snapRedirectUrl, '_blank');
     } else {
-      setNotice('Midtrans Snap SDK sedang dimuat. Coba beberapa saat lagi.');
+      const redirectUrl = fallbackRedirectUrl ?? createdOrder?.snapRedirectUrl;
+      if (redirectUrl) window.open(redirectUrl, '_blank');
+      else setNotice('Midtrans Snap SDK sedang dimuat. Coba beberapa saat lagi.');
     }
   }
 
@@ -296,8 +405,8 @@ export default function Sorelle() {
       });
       const json = await res.json();
       if (!res.ok || !json.snapToken) throw new Error(json.error ?? 'Gagal membuat sesi pembayaran.');
-      setCreatedOrder((curr) => curr ? { ...curr, snapToken: json.snapToken, snapRedirectUrl: json.snapRedirectUrl } : null);
-      triggerSnapPayment(json.snapToken);
+      setCreatedOrder((curr) => curr ? { ...curr, snapToken: json.snapToken, snapRedirectUrl: json.snapRedirectUrl } : curr);
+      triggerSnapPayment(json.snapToken, json.snapRedirectUrl);
     } catch (err) {
       setNotice(err instanceof Error ? err.message : 'Gagal membuka pembayaran.');
     }
@@ -455,27 +564,31 @@ export default function Sorelle() {
     return <main className="review-page"><div className="breadcrumbs"><button onClick={()=>go('complete')}>Pesanan selesai</button><ChevronRight size={14}/><span>Tulis ulasan</span></div><div className="review-intro"><div className="review-intro-icon"><Star/></div><span className="eyebrow">Setiap cerita punya arti</span><h1>Ceritakan pengalamanmu <em>kepada artisan.</em></h1><p>Ulasanmu membantu pengrajin lokal tumbuh dan membantu pembeli lain memilih dengan yakin.</p></div><section className="review-form-card"><div className="review-product-ref">{photo(selected)}<div><span className="eyebrow">Sorelle Artisan Living</span><b>{selected.name}</b><small>Pesanan #SOR-2026-104827</small></div><BadgeCheck/></div><fieldset className="rating-field"><legend>Bagaimana pengalamanmu?</legend><div className="review-stars">{[1,2,3,4,5].map((n)=><button key={n} aria-label={`${n} dari 5 bintang`} aria-pressed={rating===n} className={rating>=n?'selected':''} onClick={()=>setRating(n)}><Star fill="currentColor"/></button>)}</div><div className="rating-caption">{rating===0?'Pilih penilaianmu':(['','Kurang puas','Bisa lebih baik','Cukup baik','Menyenangkan','Sangat memuaskan'][rating])}</div></fieldset><div className="sentiment-field"><h2>Kesan cepat</h2><p>Pilih beberapa yang paling sesuai.</p><div className="sentiment-chips">{['Kualitas baik','Dibungkus rapi','Sesuai foto','Artisan ramah','Pengiriman aman','Bahan terasa premium'].map((x)=><button className={review.includes(x)?'active':''} key={x} onClick={()=>setReview((v)=>v.includes(x)?v.replace(x,''):v+` ${x}`)}>{review.includes(x)&&<Check size={13}/>} {x}</button>)}</div></div><label className="review-text-label">Ceritamu <span>opsional</span><textarea rows={5} placeholder="Apa yang kamu sukai dari pilihan ini? Ceritakan kepada artisan dan komunitas Sorelle." value={review.replace(/(Kualitas baik|Dibungkus rapi|Sesuai foto|Artisan ramah|Pengiriman aman|Bahan terasa premium)/g,'').trim()} onChange={(e)=>setReview(e.target.value)}/></label><label className="upload-zone"><input type="file" accept="image/*,video/*" multiple onChange={(e)=>e.target.files?.length&&setNotice(`${e.target.files.length} media dipilih. Upload aktif setelah backend tersedia.`)}/><span className="upload-icon"><Plus/></span><b>Tambahkan foto atau video</b><span>Tunjukkan pilihanmu di rumah · maks. 5 berkas</span></label><div className="store-rating"><h2>Pengalaman dengan Sorelle</h2><div>{[1,2,3,4,5].map((n)=><button key={n} className={rating>=n?'selected':''} aria-label={`Penilaian toko ${n} bintang`} onClick={()=>setRating(n)}><Star fill="currentColor"/></button>)}</div><small>Ulasan tentang layanan dan pengiriman</small></div><div className="review-consent"><ShieldCheck/> Ulasan akan ditampilkan tanpa membagikan informasi pribadi pesanan.</div><button className="button primary submit-review" onClick={()=>{if(!rating){setNotice('Pilih jumlah bintang terlebih dahulu.');return;}setNotice('Terima kasih. Ulasan tersimpan di demo ini.');go('complete');}}>Kirim ulasan <ArrowRight size={17}/></button></section><p className="review-footer-note">Ulasan jujur dan santun membuat ruang ini lebih baik untuk semua.</p></main>;
   }
   async function loadTrackingData() {
-    if (!supabase) return;
+    if (!supabase || view !== 'tracking') return;
     setTrackingLoading(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) return;
-      const res = await fetch('/api/tracking', {
+      const target = trackingTargetRef.current.trim();
+      const res = await fetch(`/api/tracking${target ? `?orderNumber=${encodeURIComponent(target)}` : ''}`, {
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
       const json = await res.json();
-      if (json.order) {
-        setTrackingOrder(json.order);
-        setTrackingEvents(json.checkpoints || []);
-      } else {
-        setTrackingOrder(null);
-        setTrackingEvents([]);
-      }
+      setTrackingOrder(json.order ?? null);
+      setTrackingEvents(Array.isArray(json.checkpoints) ? json.checkpoints : []);
     } catch (err) {
       console.error('Failed to load tracking data:', err);
     } finally {
       setTrackingLoading(false);
     }
+  }
+
+  /** Open the tracking page focused on one order from the account history. */
+  function trackOrder(orderNumber: string) {
+    trackingTargetRef.current = orderNumber;
+    setView('tracking');
+    setMobileMenu(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   async function simulateNextCheckpoint() {
@@ -739,7 +852,192 @@ export default function Sorelle() {
   }
   function Account() {
     if (!authUser) return <main className="account-page"><div className="empty-state"><UserRound/><h2>Masuk untuk melihat akunmu</h2><p>Simpan alamat dan ikuti perjalanan pesanan Sorelle.</p><button className="button primary" onClick={()=>go('login')}>Masuk / daftar <ArrowRight size={16}/></button></div></main>;
-    return <main className="account-page"><div className="account-hero"><div className="account-avatar">{(authUser.user_metadata?.full_name as string | undefined)?.[0] ?? authUser.email?.[0]?.toUpperCase() ?? 'S'}</div><div><span className="eyebrow">Akun Sorelle</span><h1>{(authUser.user_metadata?.full_name as string | undefined) || authUser.email}</h1><p>{authUser.email}</p></div><button className="button outline" onClick={async()=>{await supabase?.auth.signOut();go('home');}}>Keluar</button></div><div className="empty-state"><PackageCheck/><h2>Pesanan akan tampil di sini</h2><p>Halaman riwayat pesanan masih menunggu integrasi backend.</p><button className="button outline" onClick={()=>go('catalog')}>Jelajahi produk <ArrowRight size={16}/></button></div></main>;
+
+    const displayName = (authUser.user_metadata?.full_name as string | undefined) || authUser.email || 'Sorelle member';
+    const totalOrders = orderHistory.length;
+    const lastOrder = orderHistory[0];
+
+    return (
+      <main className="account-page">
+        <div className="account-hero">
+          <div className="account-avatar">{displayName[0]?.toUpperCase() ?? 'S'}</div>
+          <div>
+            <span className="eyebrow">Akun Sorelle</span>
+            <h1>{displayName}</h1>
+            <p>{authUser.email}</p>
+          </div>
+          <button className="button outline" onClick={async()=>{await supabase?.auth.signOut();go('home');}}>Keluar</button>
+        </div>
+
+        <div className="account-layout">
+          <div>
+            <section className="account-card">
+              <div className="section-heading">
+                <div>
+                  <span className="eyebrow">Perjalanan belanjamu</span>
+                  <h2>Riwayat pesanan</h2>
+                </div>
+                <button className="text-link" onClick={()=>setHistoryReloadKey((key)=>key+1)} disabled={orderHistoryLoading}>
+                  <RefreshCw size={14} className={orderHistoryLoading ? 'spinning' : ''}/> {orderHistoryLoading ? 'Memuat…' : 'Segarkan'}
+                </button>
+              </div>
+
+              {orderHistoryError && <div className="catalog-notice error" role="alert">{orderHistoryError}</div>}
+
+              {orderHistoryLoading && !totalOrders ? (
+                <div className="empty-state account-empty">
+                  <Clock3/>
+                  <h2>Memuat riwayat pesanan…</h2>
+                  <p>Kami sedang menyiapkan daftar pesananmu.</p>
+                </div>
+              ) : !totalOrders ? (
+                <div className="empty-state account-empty">
+                  <PackageCheck/>
+                  <h2>Belum ada pesanan</h2>
+                  <p>Setiap pesanan yang kamu buat akan tercatat di sini lengkap dengan statusnya.</p>
+                  <button className="button primary" onClick={()=>go('catalog')}>Jelajahi produk <ArrowRight size={16}/></button>
+                </div>
+              ) : (
+                <div className="account-orders">
+                  {orderHistory.map((order) => {
+                    const isOpen = expandedOrderId === order.id;
+                    const address = order.shipping_address ?? {};
+                    const destination = [address.city, address.province].filter((part)=>typeof part === 'string' && part).join(', ');
+                    const visibleItems = order.items.slice(0, 4);
+                    const remaining = order.items.length - visibleItems.length;
+                    const canTrack = ACTIVE_ORDER_STATUSES.includes(order.status);
+                    return (
+                      <article className={`account-order-detail ${isOpen ? 'open' : ''}`} key={order.id}>
+                        <button
+                          className="account-order"
+                          aria-expanded={isOpen}
+                          onClick={()=>setExpandedOrderId(isOpen ? null : order.id)}
+                        >
+                          <span className="order-thumb">
+                            {order.items[0]?.image_url
+                              ? <img src={order.items[0].image_url} alt="" loading="lazy"/>
+                              : <span className="product-image-placeholder" role="img" aria-label="Tanpa foto produk"><PackageCheck/></span>}
+                          </span>
+                          <span className="account-order-copy">
+                            <span className="eyebrow">{formatOrderDate(order.created_at)}</span>
+                            <b>{order.order_number}</b>
+                            <small>
+                              {order.items.length} produk · {money(order.total_idr)}
+                              {destination ? ` · ${destination}` : ''}
+                            </small>
+                          </span>
+                          <span className="state-pill order-pill">{orderStatusLabel(order.status)}</span>
+                          <ChevronDown size={16} className={`order-toggle ${isOpen ? 'rotated' : ''}`}/>
+                        </button>
+
+                        {isOpen && (
+                          <div className="account-order-panel">
+                            <ul className="account-order-items">
+                              {visibleItems.map((item) => (
+                                <li key={item.id}>
+                                  <span className="order-thumb small">
+                                    {item.image_url
+                                      ? <img src={item.image_url} alt="" loading="lazy"/>
+                                      : <span className="product-image-placeholder" role="img" aria-label="Tanpa foto produk"><PackageCheck/></span>}
+                                  </span>
+                                  <span className="account-order-line">
+                                    <b>{item.product_name}</b>
+                                    <small>{item.quantity} × {money(item.unit_price_idr)}</small>
+                                  </span>
+                                  <b className="account-order-line-total">{money(item.line_total_idr)}</b>
+                                </li>
+                              ))}
+                              {remaining > 0 && <li className="account-order-more">+{remaining} produk lainnya</li>}
+                            </ul>
+
+                            <div className="account-order-facts">
+                              <div><span>Penerima</span><b>{order.shipping_name}</b></div>
+                              <div><span>Telepon</span><b>{order.shipping_phone}</b></div>
+                              <div className="wide"><span>Alamat tujuan</span><b>{[address.street, address.city, address.province, address.postalCode].filter((part)=>typeof part === 'string' && part).join(', ')}</b></div>
+                              <div><span>Kurir</span><b>{order.courier || 'Belum ditentukan'}</b></div>
+                              <div><span>Nomor resi</span><b>{order.tracking_number || 'Belum tersedia'}</b></div>
+                              {order.customer_note && <div className="wide"><span>Catatan</span><b>{order.customer_note}</b></div>}
+                            </div>
+
+                            <div className="account-order-summary">
+                              <div className="summary-line"><span>Subtotal</span><span>{money(order.subtotal_idr)}</span></div>
+                              <div className="summary-line"><span>Pengiriman</span><span>{order.shipping_idr ? money(order.shipping_idr) : 'Gratis'}</span></div>
+                              {order.discount_idr > 0 && <div className="summary-line"><span>Diskon</span><span>-{money(order.discount_idr)}</span></div>}
+                              <div className="summary-divider"/>
+                              <div className="summary-line total"><b>Total</b><b>{money(order.total_idr)}</b></div>
+                            </div>
+
+                            <div className="account-order-actions">
+                              {canTrack && (
+                                <button className="button primary" onClick={()=>trackOrder(order.order_number)}>
+                                  Lacak pesanan <Truck size={15}/>
+                                </button>
+                              )}
+                              {order.status === 'pending_payment' && (
+                                <button className="button outline" onClick={()=>void requestPaymentToken(order.order_number)}>
+                                  Bayar sekarang <ArrowRight size={15}/>
+                                </button>
+                              )}
+                              {order.status === 'completed' && (
+                                <button className="text-link" onClick={()=>go('review')}>Tulis ulasan <ArrowRight size={15}/></button>
+                              )}
+                              {!canTrack && order.status !== 'pending_payment' && order.status !== 'completed' && (
+                                <span className="account-order-hint"><ShieldCheck size={15}/> Pesanan ini tidak lagi dalam perjalanan.</span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
+            <section className="account-card">
+              <div className="section-heading">
+                <div>
+                  <span className="eyebrow">Dari katalog Sorelle</span>
+                  <h2>Pilihan lain untukmu</h2>
+                </div>
+                <button className="text-link" onClick={()=>go('catalog')}>Semua produk <ArrowRight size={15}/></button>
+              </div>
+              <ProductGrid items={products.slice(0, 4)}/>
+            </section>
+          </div>
+
+          <aside>
+            <section className="account-card account-summary">
+              <span className="eyebrow">Ringkasan akun</span>
+              <h2>Pesananmu</h2>
+              <div className="summary-line"><span>Total pesanan</span><b>{totalOrders}</b></div>
+              <div className="summary-line"><span>Sedang berjalan</span><b>{orderHistory.filter((order)=>ACTIVE_ORDER_STATUSES.includes(order.status)).length}</b></div>
+              <div className="summary-line"><span>Perlu dibayar</span><b>{orderHistory.filter((order)=>order.status === 'pending_payment').length}</b></div>
+              <div className="summary-divider"/>
+              <div className="summary-line"><span>Pesanan terakhir</span><b>{lastOrder ? lastOrder.order_number : '—'}</b></div>
+              <div className="summary-line"><span>Tanggal</span><span>{lastOrder ? formatOrderDate(lastOrder.created_at) : '—'}</span></div>
+              <div className="summary-line"><span>Status</span><b>{lastOrder ? orderStatusLabel(lastOrder.status) : '—'}</b></div>
+              <button className="button outline" onClick={()=>go('catalog')}>Mulai belanja lagi <ArrowRight size={15}/></button>
+            </section>
+
+            <section className="account-card">
+              <span className="eyebrow">Bantuan</span>
+              <h2>Butuh sesuatu?</h2>
+              <button className="account-menu-item" onClick={()=>go('tracking')}>
+                <Truck/>
+                <span><b>Lacak pengiriman</b><small>Lihat posisi paket terakhir</small></span>
+                <ChevronRight/>
+              </button>
+              <button className="account-menu-item" onClick={()=>setNotice('Pusat bantuan akan segera tersedia.')}>
+                <ShieldCheck/>
+                <span><b>Pusat bantuan</b><small>Pertanyaan seputar pesanan</small></span>
+                <ChevronRight/>
+              </button>
+            </section>
+          </aside>
+        </div>
+      </main>
+    );
   }
   const content: Record<View, () => React.ReactNode> = { home:Home,catalog:Catalog,product:ProductDetail,cart:Cart,checkout:Checkout,complete:Complete,review:Review,tracking:Tracking,account:Account,login:Login };
   const Page = content[view];
