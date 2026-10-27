@@ -22,6 +22,36 @@ This migration creates the first Sorelle marketplace schema, ownership-based RLS
 
 The application has login, signup, password reset, and a basic signed-in account state. Other account fields/orders remain demo-only.
 
+## Custom SMTP (Google Workspace / Gmail)
+
+Supabase's built-in email service allows only **2 messages per hour** and delivers only to addresses inside your organization. That limit is what produces `email rate limit exceeded`. Configure your own SMTP to lift it.
+
+1. Prepare the Google side:
+   - A Google Workspace account (`you@yourdomain.com`) is preferred. With a personal Gmail account, enabling 2-Step Verification and creating an **App Password** is required, because Google rejects your normal password for SMTP.
+   - Google Workspace admin: **Security → Access and data control → Less secure apps** should stay off; use App Passwords instead.
+2. Create the credential:
+   - Google Account → **Security** → **2-Step Verification** → **App passwords**.
+   - Name it `Supabase Sorelle`, then copy the 16-character password.
+3. In Supabase open **Authentication → Emails → SMTP Settings** and enable custom SMTP:
+
+   | Field | Value |
+   | --- | --- |
+   | Host | `smtp.gmail.com` |
+   | Port | `587` |
+   | Username | your full Gmail/Workspace address |
+   | Password | the 16-character App Password (no spaces) |
+   | Sender email | your Gmail/Workspace address |
+   | Sender name | `Sorelle` |
+
+4. Save, then send a test email from the same page. To confirm signup, register with a different address.
+5. After enabling custom SMTP, raise the limits in **Authentication → Rate Limits** if needed (default becomes 30 messages/hour).
+
+Notes and limits:
+
+- Gmail sending limits are roughly 500 recipients/day for Workspace and ~100/day for a free Gmail account. This is fine for testing and early production but not for high-volume transactional mail; services such as Resend, Brevo, or SendGrid scale better.
+- Never commit the App Password. It is only entered in the Supabase dashboard.
+- Keep the **Email** provider and confirmation templates enabled after switching, otherwise signups stop working.
+
 ## Checkout migration and reservation
 
 Before using the checkout endpoint, apply `migrations/20261026010000_checkout_reservations.sql` to the same Supabase project using SQL Editor. It adds the atomic `create_order` database function, an idempotency key, and stock reservations that expire after 15 minutes. The migration enables `pg_cron` to run the reservation-release job every minute. Confirm the migration runs successfully and verify **Database → Extensions → pg_cron** is enabled. If enabling `pg_cron` or scheduling is blocked in your project, stop here and configure an equivalent trusted scheduled job before accepting orders; do not manually mark orders paid or release stock from a browser.
