@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { DEFAULT_COURIER_ID } from '@/lib/shipping';
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, Check, ChevronDown,
   ChevronRight, Clock3, CreditCard, Heart, House, Leaf,
@@ -47,6 +48,8 @@ export default function Sorelle() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authMessage, setAuthMessage] = useState('');
   const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [courierId, setCourierId] = useState(DEFAULT_COURIER_ID);
+  const [shippingOptions, setShippingOptions] = useState<Array<{ id: string; label: string; service: string; estimate: string; priceIdr: number; zoneLabel: string }>>([]);
   const [orderRequestKey, setOrderRequestKey] = useState('');
   const [createdOrder, setCreatedOrder] = useState<{
     orderId: string;
@@ -56,6 +59,9 @@ export default function Sorelle() {
     shippingIdr: number;
     totalIdr: number;
     reservationExpiresAt: string;
+    courier?: string | null;
+    courierLabel?: string | null;
+    courierService?: string | null;
     snapToken?: string | null;
     snapRedirectUrl?: string | null;
   } | null>(null);
@@ -145,6 +151,8 @@ export default function Sorelle() {
   const subtotal = cartItems.reduce((s, p) => s + p.price * cart[p.id], 0);
   const shipping = subtotal >= 500000 ? 0 : 18000;
   const total = subtotal + shipping;
+  const selectedShipping = shippingOptions.find((option) => option.id === courierId);
+  const checkoutShippingIdr = selectedShipping ? (subtotal >= 500000 ? 0 : selectedShipping.priceIdr) : shipping;
   const visibleProducts = useMemo(() => {
     let result = products.filter((p) => (category === 'Semua' || p.category === category) && `${p.name} ${p.description}`.toLowerCase().includes(query.toLowerCase()));
     if (sort === 'Harga terendah') result = [...result].sort((a, b) => a.price - b.price);
@@ -179,6 +187,25 @@ export default function Sorelle() {
   function Cart() {
     return <main className="cart-page"><div className="breadcrumbs"><button onClick={()=>go('home')}>Beranda</button><ChevronRight size={14}/><span>Keranjang Belanja</span></div><div className="page-heading"><div><span className="eyebrow">Sudah dekat jadi milikmu</span><h1>Keranjang <em>pilihanmu.</em></h1><p>{count} benda baik, siap menemukan rumahnya.</p></div><button className="text-link" onClick={()=>go('catalog')}><ArrowLeft size={16}/> Lanjut belanja</button></div>{!count ? <div className="empty-state cart-empty"><ShoppingBag/><h2>Keranjangmu sedang beristirahat</h2><p>Temukan sesuatu yang terasa seperti milikmu.</p><button className="button primary" onClick={()=>go('catalog')}>Jelajahi koleksi <ArrowRight size={16}/></button></div> : <div className="cart-layout"><div className="cart-list"><div className="cart-table-head"><span>Produk pilihan</span><span>Jumlah</span><span>Harga</span></div>{cartItems.map((p)=><article className="cart-item" key={p.id}><button className="cart-item-photo" onClick={()=>goProduct(p)}>{photo(p)}</button><div className="cart-item-info"><span className="eyebrow">{p.category}</span><button className="cart-item-name" onClick={()=>goProduct(p)}>{p.name}</button><p>{p.description}</p><button className="remove-item" onClick={()=>setCart((v)=>({...v,[p.id]:0}))}>Hapus pilihan</button></div><div className="quantity-control"><button onClick={()=>add(p.id,-1)} aria-label="Kurangi jumlah"><Minus size={14}/></button><span>{cart[p.id]}</span><button onClick={()=>add(p.id)} aria-label="Tambah jumlah"><Plus size={14}/></button></div><div className="cart-line-price">{money(p.price*cart[p.id])}</div></article>)}<div className="cart-delivery"><Truck/><div><b>{subtotal>=500000?'Selamat, ongkir ditanggung Sorelle.':'Sedikit lagi menuju ongkir gratis.'}</b><span>{subtotal>=500000?'Pilihanmu diantar tanpa biaya kirim.':`Tambah ${money(500000-subtotal)} untuk gratis ongkir.`}</span></div><div className="delivery-progress"><i style={{width:`${Math.min(100,subtotal/5000)}%`}}/></div></div></div><aside className="summary-card"><span className="eyebrow">Ruang ringkasan</span><h2>Ringkasan belanja</h2><div className="summary-line"><span>Subtotal · {count} benda</span><span>{money(subtotal)}</span></div><div className="summary-line"><span>Pengiriman</span><span>{shipping?money(shipping):'Ditanggung Sorelle'}</span></div><div className="summary-line"><span>Diskon pilihan</span><span>—</span></div><div className="summary-divider"/><div className="summary-line total"><b>Total sementara</b><b>{money(total)}</b></div><p className="summary-tax">Termasuk pajak yang berlaku.</p><button className="button primary checkout-button" onClick={()=>{setStage('address');go('checkout');}}>Lanjut ke checkout <ArrowRight size={17}/></button><div className="secure-note"><ShieldCheck size={16}/> Pembayaran aman & terlindungi</div><button className="coupon-toggle" onClick={()=>setNotice('Kode promo akan tersedia setelah checkout terhubung.')}>Punya kode promo? <ChevronDown size={15}/></button></aside></div>}</main>;
   }
+  async function loadShippingOptions(province: string, subtotalIdr: number) {
+    try {
+      const res = await fetch('/api/shipping/rates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ province, subtotalIdr }),
+      });
+      const json = await res.json();
+      if (res.ok && Array.isArray(json.options)) {
+        setShippingOptions(json.options.map((option: { id: string; label: string; service: string; estimate: string; priceIdr: number }) => ({ ...option, zoneLabel: json.zoneLabel })));
+        if (!json.options.some((option: { id: string }) => option.id === courierId) && json.options[0]) {
+          setCourierId(json.options[0].id);
+        }
+      }
+    } catch {
+      setShippingOptions([]);
+    }
+  }
+
   async function placeOrder() {
     if (!supabase || !authUser) { setNotice('Masuk ke akun sebelum membuat pesanan.'); go('login'); return; }
     if (!cartItems.length) { setNotice('Keranjang masih kosong.'); go('cart'); return; }
@@ -210,6 +237,7 @@ export default function Sorelle() {
           shippingPhone,
           shippingAddress: { street, city, province, postalCode },
           customerNote: noteValue,
+          courierId,
         }),
       });
       const result = await response.json();
@@ -303,11 +331,14 @@ export default function Sorelle() {
     const steps: { key: typeof stage; label: string }[] = [{key:'address',label:'Alamat'}, {key:'shipping',label:'Pengiriman'}, {key:'payment',label:'Pembayaran'}];
     const next = () => {
       if (stage === 'address') {
+        const addressForm = document.getElementById('checkout-form') as HTMLFormElement | null;
+        const province = addressForm ? String(new FormData(addressForm).get('province') || '').trim() : '';
+        void loadShippingOptions(province, subtotal);
         setStage('shipping');
       } else if (stage === 'shipping') setStage('payment');
       else void placeOrder();
     };
-    return <main className="checkout-page"><div className="breadcrumbs"><button onClick={()=>go('home')}>Beranda</button><ChevronRight size={14}/><button onClick={()=>go('cart')}>Keranjang</button><ChevronRight size={14}/><span>Checkout</span></div><div className="page-heading"><div><span className="eyebrow">Satu langkah menuju rumah baru</span><h1>Checkout <em>yang tenang.</em></h1><p>Periksa detail, lalu kami siapkan pilihanmu.</p></div></div><div className="checkout-layout"><form className="checkout-main" id="checkout-form" onSubmit={(e) => { e.preventDefault(); if (stage === 'payment') void placeOrder(); }} noValidate><div className="checkout-steps">{steps.map((s,i)=><button key={s.key} className={`checkout-step ${stage===s.key?'active':''} ${steps.findIndex((x)=>x.key===stage)>i?'done':''}`} onClick={()=>setStage(s.key)}><span>{steps.findIndex((x)=>x.key===stage)>i?<Check size={15}/>:`0${i+1}`}</span>{s.label}</button>)}</div><section className="checkout-section" style={{ display: stage === 'address' ? undefined : 'none' }}><div className="checkout-title"><div><span className="eyebrow">Ke mana pilihanmu pergi?</span><h2>Alamat pengiriman</h2></div><button className="text-link" onClick={()=>setNotice('Formulir alamat baru segera tersedia.')}>+ Tambah alamat</button></div><label className="form-label">Nama penerima<input name="name" autoComplete="name" required maxLength={120}/></label><label className="form-label">Nomor telepon<input name="phone" type="tel" autoComplete="tel" required maxLength={30}/></label><label className="form-label">Alamat jalan<input name="street" autoComplete="street-address" required maxLength={250}/></label><div className="address-fields"><label className="form-label">Kota<input name="city" autoComplete="address-level2" required maxLength={120}/></label><label className="form-label">Provinsi<input name="province" autoComplete="address-level1" required maxLength={120}/></label></div><label className="form-label">Kode pos<input name="postalCode" autoComplete="postal-code" required maxLength={20}/></label><label className="form-label">Catatan kurir <span>opsional</span><textarea name="note" placeholder="Petunjuk pengantaran" rows={3} maxLength={1000}/></label></section>{stage==='shipping' && <section className="checkout-section"><div className="checkout-title"><div><span className="eyebrow">Dipilih sesuai kebutuhan</span><h2>Opsi pengiriman</h2></div></div><div className="shipping-option selected"><span className="radio-mark"/><Truck/><span><b>Pengiriman reguler</b><small>Ongkir dihitung server. Estimasi belum terhubung ke kurir.</small></span><strong>{shipping?money(shipping):'Gratis'}</strong></div><p className="form-hint">Pilihan kurir dan pelacakan real-time belum terintegrasi.</p></section>}{stage==='payment' && <section className="checkout-section"><div className="checkout-title"><div><span className="eyebrow">Pilihan pembayaran aman</span><h2>Metode Pembayaran Midtrans Snap</h2></div></div><div style={{ display: 'grid', gap: '10px', marginBottom: '15px' }}><div className="shipping-option selected"><CreditCard size={18}/><span><b>Metode Pembayaran Lengkap</b><small>QRIS (GoPay, ShopeePay), Virtual Account (BCA, Mandiri, BNI, BRI), Kartu Kredit/Debit</small></span></div></div><div className="payment-disclaimer"><ShieldCheck/> Pembayaran diproses aman melalui Midtrans Snap. Total dihitung dan diverifikasi otomatis oleh server.</div></section>}<div className="checkout-nav"><button className="text-link" onClick={()=>stage==='address'?go('cart'):setStage(stage==='payment'?'shipping':'address')}><ArrowLeft size={15}/> Kembali</button><button className="button primary" onClick={next} disabled={checkoutBusy}>{checkoutBusy?'Membuat pesanan…':stage==='payment'?'Bayar Sekarang via Midtrans':'Lanjut'} <ArrowRight size={16}/></button></div></form><aside className="summary-card"><span className="eyebrow">Pilihan di dalam keranjang</span><h2>Ringkasan pesanan</h2><div className="checkout-items">{cartItems.map((p)=><div className="checkout-item" key={p.id}>{photo(p)}<span><b>{p.name}</b><small>Jumlah: {cart[p.id]}</small></span><strong>{money(p.price*cart[p.id])}</strong></div>)}</div><div className="summary-line"><span>Subtotal</span><span>{money(subtotal)}</span></div><div className="summary-line"><span>Pengiriman</span><span>{shipping?money(shipping):'Gratis'}</span></div><div className="summary-divider"/><div className="summary-line total"><b>Total</b><b>{money(total)}</b></div><div className="secure-note"><ShieldCheck size={16}/> Informasi pembayaran terlindungi</div></aside></div></main>;
+    return <main className="checkout-page"><div className="breadcrumbs"><button onClick={()=>go('home')}>Beranda</button><ChevronRight size={14}/><button onClick={()=>go('cart')}>Keranjang</button><ChevronRight size={14}/><span>Checkout</span></div><div className="page-heading"><div><span className="eyebrow">Satu langkah menuju rumah baru</span><h1>Checkout <em>yang tenang.</em></h1><p>Periksa detail, lalu kami siapkan pilihanmu.</p></div></div><div className="checkout-layout"><form className="checkout-main" id="checkout-form" onSubmit={(e) => { e.preventDefault(); if (stage === 'payment') void placeOrder(); }} noValidate><div className="checkout-steps">{steps.map((s,i)=><button key={s.key} className={`checkout-step ${stage===s.key?'active':''} ${steps.findIndex((x)=>x.key===stage)>i?'done':''}`} onClick={()=>setStage(s.key)}><span>{steps.findIndex((x)=>x.key===stage)>i?<Check size={15}/>:`0${i+1}`}</span>{s.label}</button>)}</div><section className="checkout-section" style={{ display: stage === 'address' ? undefined : 'none' }}><div className="checkout-title"><div><span className="eyebrow">Ke mana pilihanmu pergi?</span><h2>Alamat pengiriman</h2></div><button className="text-link" onClick={()=>setNotice('Formulir alamat baru segera tersedia.')}>+ Tambah alamat</button></div><label className="form-label">Nama penerima<input name="name" autoComplete="name" required maxLength={120}/></label><label className="form-label">Nomor telepon<input name="phone" type="tel" autoComplete="tel" required maxLength={30}/></label><label className="form-label">Alamat jalan<input name="street" autoComplete="street-address" required maxLength={250}/></label><div className="address-fields"><label className="form-label">Kota<input name="city" autoComplete="address-level2" required maxLength={120}/></label><label className="form-label">Provinsi<input name="province" autoComplete="address-level1" required maxLength={120}/></label></div><label className="form-label">Kode pos<input name="postalCode" autoComplete="postal-code" required maxLength={20}/></label><label className="form-label">Catatan kurir <span>opsional</span><textarea name="note" placeholder="Petunjuk pengantaran" rows={3} maxLength={1000}/></label></section>{stage==='shipping' && <section className="checkout-section"><div className="checkout-title"><div><span className="eyebrow">Dipilih sesuai kebutuhan</span><h2>Opsi pengiriman</h2></div></div>{shippingOptions.length === 0 ? <p className="form-hint">Memuat pilihan kurir?</p> : shippingOptions.map((option) => <label className="shipping-option" key={option.id}><input type="radio" name="courier" value={option.id} checked={courierId === option.id} onChange={() => setCourierId(option.id)}/><span className="radio-mark"/><Truck/><span><b>{option.label} — {option.service}</b><small>{option.estimate} — {option.zoneLabel}</small></span><strong>{option.priceIdr ? money(option.priceIdr) : 'Gratis'}</strong></label>)}<p className="form-hint">Tarif estimasi per zona. Pelacakan resi aktif setelah pembayaran.</p></section>}{stage==='payment' && <section className="checkout-section"><div className="checkout-title"><div><span className="eyebrow">Pilihan pembayaran aman</span><h2>Metode Pembayaran Midtrans Snap</h2></div></div><div style={{ display: 'grid', gap: '10px', marginBottom: '15px' }}><div className="shipping-option selected"><CreditCard size={18}/><span><b>Metode Pembayaran Lengkap</b><small>QRIS (GoPay, ShopeePay), Virtual Account (BCA, Mandiri, BNI, BRI), Kartu Kredit/Debit</small></span></div></div><div className="payment-disclaimer"><ShieldCheck/> Pembayaran diproses aman melalui Midtrans Snap. Total dihitung dan diverifikasi otomatis oleh server.</div></section>}<div className="checkout-nav"><button className="text-link" onClick={()=>stage==='address'?go('cart'):setStage(stage==='payment'?'shipping':'address')}><ArrowLeft size={15}/> Kembali</button><button className="button primary" onClick={next} disabled={checkoutBusy}>{checkoutBusy?'Membuat pesanan…':stage==='payment'?'Bayar Sekarang via Midtrans':'Lanjut'} <ArrowRight size={16}/></button></div></form><aside className="summary-card"><span className="eyebrow">Pilihan di dalam keranjang</span><h2>Ringkasan pesanan</h2><div className="checkout-items">{cartItems.map((p)=><div className="checkout-item" key={p.id}>{photo(p)}<span><b>{p.name}</b><small>Jumlah: {cart[p.id]}</small></span><strong>{money(p.price*cart[p.id])}</strong></div>)}</div><div className="summary-line"><span>Subtotal</span><span>{money(subtotal)}</span></div><div className="summary-line"><span>Pengiriman</span><span>{checkoutShippingIdr?money(checkoutShippingIdr):'Gratis'}</span></div><div className="summary-divider"/><div className="summary-line total"><b>Total</b><b>{money(subtotal + checkoutShippingIdr)}</b></div><div className="secure-note"><ShieldCheck size={16}/> Informasi pembayaran terlindungi</div></aside></div></main>;
   }
   function Complete() {
     if (!createdOrder) return <main className="complete-page"><div className="empty-state"><PackageCheck/><h2>Belum ada pesanan</h2><p>Pesanan akan muncul di sini setelah checkout dibuat.</p><button className="button outline" onClick={()=>go('catalog')}>Jelajahi produk <ArrowRight size={16}/></button></div></main>;
@@ -349,7 +380,7 @@ export default function Sorelle() {
               <span className="state-pill" style={{ background: '#e8f5e9', color: '#2e7d32' }}>Lunas</span>
             </div>
             <div className="summary-line"><span>Subtotal</span><span>{money(createdOrder.subtotalIdr)}</span></div>
-            <div className="summary-line"><span>Pengiriman</span><span>{createdOrder.shippingIdr ? money(createdOrder.shippingIdr) : 'Gratis'}</span></div>
+            <div className="summary-line"><span>Pengiriman</span><span>{createdOrder.shippingIdr ? money(createdOrder.shippingIdr) : 'Gratis'}</span></div><div className="summary-line"><span>Kurir</span><span>{createdOrder.courierLabel ? `${createdOrder.courierLabel} — ${createdOrder.courierService}` : (createdOrder.courier || 'Reguler')}</span></div>
             <div className="summary-divider"/>
             <div className="summary-line total"><b>Total Pembayaran</b><b>{money(createdOrder.totalIdr)}</b></div>
           </section>

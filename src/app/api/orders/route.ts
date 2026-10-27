@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { createSnapTransaction, isMidtransConfigured } from '@/lib/midtrans';
+import { DEFAULT_COURIER_ID, getCourier as getCourierOrNull } from '@/lib/shipping';
 
 export const runtime = 'nodejs';
 
@@ -45,6 +46,10 @@ export async function POST(request: Request) {
   if (body.customerNote !== undefined && (typeof body.customerNote !== 'string' || body.customerNote.length > 1000)) {
     return NextResponse.json({ error: 'Catatan pesanan tidak valid.' }, { status: 400 });
   }
+  const courierId = typeof body.courierId === 'string' ? body.courierId.trim() : '';
+  if (!getCourierOrNull(courierId)) {
+    return NextResponse.json({ error: 'Pilihan kurir tidak dikenal.' }, { status: 400 });
+  }
   const seen = new Set<string>();
   for (const item of body.items) {
     if (!item || typeof item !== 'object' || !('productId' in item) || !('quantity' in item)) {
@@ -64,6 +69,7 @@ export async function POST(request: Request) {
     p_shipping_phone: body.shippingPhone.trim(),
     p_shipping_address: address,
     p_customer_note: typeof body.customerNote === 'string' ? body.customerNote.trim() || null : null,
+    p_courier: courierId || DEFAULT_COURIER_ID,
   });
   if (error) {
     if (error.code === 'P0001' || error.code === 'P0002') return NextResponse.json({ error: error.message }, { status: 409 });

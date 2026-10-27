@@ -11,6 +11,7 @@ Ruang belanja kurasi untuk produk rumah, gaya hidup, dan artisan lokal. Aplikasi
 - **Pembayaran Midtrans Snap** — token Snap dibuat di server; pop-up pembayaran muncul di checkout. Webhook memverifikasi signature SHA-512 sebelum menandai pesanan lunas.
 - **Koin loyalitas** — hadiah +500 koin dicatat idempoten setelah pembayaran terverifikasi.
 - **Pelacakan pengiriman** — pesanan lunas membuat pengiriman Biteship; halaman Tracking menampilkan linimasa `shipment_events`. Webhook Biteship memperbarui status hingga `delivered`.
+- **Ongkir per zona** — pilihan kurir (AnterAja, SiCepat, J&T, JNE, Grab Same Day) muncul di checkout dengan tarif estimasi berdasarkan provinsi tujuan dan gratis ongkir di atas Rp 500.000. Tanpa biaya API; angka final dihitung ulang di database.
 - **Mode pratinjau** — tanpa variabel Supabase, UI memakai katalog demo dan menampilkan pemberitahuan.
 
 ## Teknologi
@@ -97,7 +98,7 @@ Pesanan yang tidak dibayar dalam 15 menit dibatalkan otomatis dan stoknya dikemb
 
 - Riwayat pesanan di halaman Akun belum menampilkan data dari database.
 - Ulasan produk, halaman pelacakan kurir real-time, dan upload media belum terhubung ke backend.
-- Pemilihan kurir dan tarif ongkir masih berupa satu opsi reguler; tarif dihitung dengan aturan tetap, bukan dari API.
+- Pemilihan kurir memakai tarif estimasi per zona, bukan tarif asli dari API kurir (Biteship rates butuh saldo).
 - Harga, stok, dan gambar pada `seed_demo.sql` hanya contoh; ganti dengan data merchant sebelum penjualan nyata.
 - Peringatan ESLint untuk `<img>` belum ditangani (belum memakai `next/image`).
 

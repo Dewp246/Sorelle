@@ -60,6 +60,17 @@ The Next.js `POST /api/orders` endpoint requires a valid Supabase Auth bearer to
 
 Midtrans is not connected yet. Created orders remain `pending_payment`; the app explicitly does not report payment success. Do not launch live checkout until a verified Midtrans notification endpoint can mark payment and order status safely.
 
+## Zone-based shipping estimate
+
+Biteship's tracking API is used after payment, but its **rates API requires a paid balance**. As a free alternative, `20261027000000_zone_shipping.sql` adds an offline estimate:
+
+- Zone 1 (Jawa & Bali): Rp 18.000
+- Zone 2 (Sumatera, Kalimantan, Sulawesi, NTB): Rp 32.000
+- Zone 3 (Maluku & Papua): Rp 45.000
+- Free shipping at a subtotal of Rp 500.000 or more.
+
+Couriers multiply that base (AnterAja 0.95, SiCepat 1.00, J&T 1.05, JNE 1.10, and Grab Same Day 1.60 for zone 1 only). Apply this migration after the checkout reservations migration. `create_order` keeps the same contract with one added argument, `p_courier`. The database is the authority; `src/lib/shipping.ts` only drives the checkout preview, so keep both zone lists in sync if you change them.
+
 ## Optional Supabase CLI flow
 
 Install the Supabase CLI using its official instructions, then run from the repository root:
