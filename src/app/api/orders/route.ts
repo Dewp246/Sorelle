@@ -184,7 +184,7 @@ export async function POST(request: Request) {
     seen.add(productId);
   }
 
-  const { data, error } = await client.rpc('create_order', {
+  let { data, error } = await client.rpc('create_order', {
     p_idempotency_key: body.idempotencyKey,
     p_items: body.items,
     p_shipping_name: body.shippingName.trim(),
@@ -193,10 +193,23 @@ export async function POST(request: Request) {
     p_customer_note: typeof body.customerNote === 'string' ? body.customerNote.trim() || null : null,
     p_courier: courierId || DEFAULT_COURIER_ID,
   });
+  if (error && error.code === 'PGRST202') {
+    const fallback = await client.rpc('create_order', {
+      p_idempotency_key: body.idempotencyKey,
+      p_items: body.items,
+      p_shipping_name: body.shippingName.trim(),
+      p_shipping_phone: body.shippingPhone.trim(),
+      p_shipping_address: address,
+      p_customer_note: typeof body.customerNote === 'string' ? body.customerNote.trim() || null : null,
+    });
+    data = fallback.data;
+    error = fallback.error;
+  }
   if (error) {
     if (error.code === 'P0001' || error.code === 'P0002') return NextResponse.json({ error: error.message }, { status: 409 });
     if (error.code === '22023' || error.code === '22003') return NextResponse.json({ error: error.message }, { status: 400 });
-    console.error('create_order failed', { code: error.code, message: error.message });
+    if (error.code === '28000') return NextResponse.json({ error: 'Sesi login tidak valid. Silakan masuk kembali.' }, { status: 401 });
+    console.error('create_order failed', { code: error.code, message: error.message, details: error.details, hint: error.hint });
     return NextResponse.json({ error: 'Pesanan belum dapat dibuat. Coba kembali.' }, { status: 503 });
   }
 
