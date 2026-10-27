@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, Check, ChevronDown,
-  ChevronRight, Clock3, CreditCard, Headphones, Heart, House, Leaf,
+  ChevronRight, Clock3, CreditCard, Heart, House, Leaf,
   MapPin, Menu, Minus, PackageCheck, Plus, Search, ShieldCheck, ShoppingBag,
   SlidersHorizontal, Sparkles, Star, Truck, UserRound, X,
 } from 'lucide-react';
@@ -44,14 +44,10 @@ export default function Sorelle() {
   const [stage, setStage] = useState<'address' | 'shipping' | 'payment' | 'done'>('address');
   const [authUser, setAuthUser] = useState<{ id: string; email?: string; user_metadata?: Record<string, unknown> } | null>(null);
   const [authMode, setAuthMode] = useState<'login' | 'signup' | 'reset' | 'update'>('login');
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [authName, setAuthName] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
   const [authMessage, setAuthMessage] = useState('');
   const [checkoutBusy, setCheckoutBusy] = useState(false);
   const [orderRequestKey, setOrderRequestKey] = useState('');
-  const [shippingDetails, setShippingDetails] = useState({ name: '', phone: '', street: '', city: '', province: '', postalCode: '', note: '' });
   const [createdOrder, setCreatedOrder] = useState<{
     orderId: string;
     orderNumber: string;
@@ -192,16 +188,28 @@ export default function Sorelle() {
       if (sessionError || !session?.access_token) throw new Error('Sesi berakhir. Masuk kembali sebelum checkout.');
       const key = orderRequestKey || crypto.randomUUID();
       setOrderRequestKey(key);
+      const checkoutForm = document.getElementById('checkout-form') as HTMLFormElement | null;
+      const formData = checkoutForm ? new FormData(checkoutForm) : null;
+      const shippingName = String(formData?.get('name') || '').trim();
+      const shippingPhone = String(formData?.get('phone') || '').trim();
+      const street = String(formData?.get('street') || '').trim();
+      const city = String(formData?.get('city') || '').trim();
+      const province = String(formData?.get('province') || '').trim();
+      const postalCode = String(formData?.get('postalCode') || '').trim();
+      const noteValue = String(formData?.get('note') || '').trim();
+      if (![shippingName, shippingPhone, street, city, province, postalCode].every(Boolean)) {
+        throw new Error('Lengkapi nama, telepon, jalan, kota, provinsi, dan kode pos.');
+      }
       const response = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify({
           idempotencyKey: key,
           items: cartItems.map((product) => ({ productId: product.id, quantity: cart[product.id] })),
-          shippingName: shippingDetails.name,
-          shippingPhone: shippingDetails.phone,
-          shippingAddress: { street: shippingDetails.street, city: shippingDetails.city, province: shippingDetails.province, postalCode: shippingDetails.postalCode },
-          customerNote: shippingDetails.note,
+          shippingName,
+          shippingPhone,
+          shippingAddress: { street, city, province, postalCode },
+          customerNote: noteValue,
         }),
       });
       const result = await response.json();
@@ -295,14 +303,11 @@ export default function Sorelle() {
     const steps: { key: typeof stage; label: string }[] = [{key:'address',label:'Alamat'}, {key:'shipping',label:'Pengiriman'}, {key:'payment',label:'Pembayaran'}];
     const next = () => {
       if (stage === 'address') {
-        if (![shippingDetails.name, shippingDetails.phone, shippingDetails.street, shippingDetails.city, shippingDetails.province, shippingDetails.postalCode].every((value) => value.trim())) {
-          setNotice('Lengkapi nama, telepon, jalan, kota, provinsi, dan kode pos.'); return;
-        }
         setStage('shipping');
       } else if (stage === 'shipping') setStage('payment');
       else void placeOrder();
     };
-    return <main className="checkout-page"><div className="breadcrumbs"><button onClick={()=>go('home')}>Beranda</button><ChevronRight size={14}/><button onClick={()=>go('cart')}>Keranjang</button><ChevronRight size={14}/><span>Checkout</span></div><div className="page-heading"><div><span className="eyebrow">Satu langkah menuju rumah baru</span><h1>Checkout <em>yang tenang.</em></h1><p>Periksa detail, lalu kami siapkan pilihanmu.</p></div></div><div className="checkout-layout"><div className="checkout-main"><div className="checkout-steps">{steps.map((s,i)=><button key={s.key} className={`checkout-step ${stage===s.key?'active':''} ${steps.findIndex((x)=>x.key===stage)>i?'done':''}`} onClick={()=>setStage(s.key)}><span>{steps.findIndex((x)=>x.key===stage)>i?<Check size={15}/>:`0${i+1}`}</span>{s.label}</button>)}</div>{stage==='address' && <section className="checkout-section"><div className="checkout-title"><div><span className="eyebrow">Ke mana pilihanmu pergi?</span><h2>Alamat pengiriman</h2></div><button className="text-link" onClick={()=>setNotice('Formulir alamat baru segera tersedia.')}>+ Tambah alamat</button></div><label className="form-label">Nama penerima<input autoComplete="name" value={shippingDetails.name} onChange={(e)=>setShippingDetails({...shippingDetails,name:e.target.value})} required maxLength={120}/></label><label className="form-label">Nomor telepon<input type="tel" autoComplete="tel" value={shippingDetails.phone} onChange={(e)=>setShippingDetails({...shippingDetails,phone:e.target.value})} required maxLength={30}/></label><label className="form-label">Alamat jalan<input autoComplete="street-address" value={shippingDetails.street} onChange={(e)=>setShippingDetails({...shippingDetails,street:e.target.value})} required maxLength={250}/></label><div className="address-fields"><label className="form-label">Kota<input autoComplete="address-level2" value={shippingDetails.city} onChange={(e)=>setShippingDetails({...shippingDetails,city:e.target.value})} required maxLength={120}/></label><label className="form-label">Provinsi<input autoComplete="address-level1" value={shippingDetails.province} onChange={(e)=>setShippingDetails({...shippingDetails,province:e.target.value})} required maxLength={120}/></label></div><label className="form-label">Kode pos<input autoComplete="postal-code" value={shippingDetails.postalCode} onChange={(e)=>setShippingDetails({...shippingDetails,postalCode:e.target.value})} required maxLength={20}/></label><label className="form-label">Catatan kurir <span>opsional</span><textarea placeholder="Petunjuk pengantaran" rows={3} maxLength={1000} value={shippingDetails.note} onChange={(e)=>setShippingDetails({...shippingDetails,note:e.target.value})}/></label></section>}{stage==='shipping' && <section className="checkout-section"><div className="checkout-title"><div><span className="eyebrow">Dipilih sesuai kebutuhan</span><h2>Opsi pengiriman</h2></div></div><div className="shipping-option selected"><span className="radio-mark"/><Truck/><span><b>Pengiriman reguler</b><small>Ongkir dihitung server. Estimasi belum terhubung ke kurir.</small></span><strong>{shipping?money(shipping):'Gratis'}</strong></div><p className="form-hint">Pilihan kurir dan pelacakan real-time belum terintegrasi.</p></section>}{stage==='payment' && <section className="checkout-section"><div className="checkout-title"><div><span className="eyebrow">Pilihan pembayaran aman</span><h2>Metode Pembayaran Midtrans Snap</h2></div></div><div style={{ display: 'grid', gap: '10px', marginBottom: '15px' }}><div className="shipping-option selected"><CreditCard size={18}/><span><b>Metode Pembayaran Lengkap</b><small>QRIS (GoPay, ShopeePay), Virtual Account (BCA, Mandiri, BNI, BRI), Kartu Kredit/Debit</small></span></div></div><div className="payment-disclaimer"><ShieldCheck/> Pembayaran diproses aman melalui Midtrans Snap. Total dihitung dan diverifikasi otomatis oleh server.</div></section>}<div className="checkout-nav"><button className="text-link" onClick={()=>stage==='address'?go('cart'):setStage(stage==='payment'?'shipping':'address')}><ArrowLeft size={15}/> Kembali</button><button className="button primary" onClick={next} disabled={checkoutBusy}>{checkoutBusy?'Membuat pesanan…':stage==='payment'?'Bayar Sekarang via Midtrans':'Lanjut'} <ArrowRight size={16}/></button></div></div><aside className="summary-card"><span className="eyebrow">Pilihan di dalam keranjang</span><h2>Ringkasan pesanan</h2><div className="checkout-items">{cartItems.map((p)=><div className="checkout-item" key={p.id}>{photo(p)}<span><b>{p.name}</b><small>Jumlah: {cart[p.id]}</small></span><strong>{money(p.price*cart[p.id])}</strong></div>)}</div><div className="summary-line"><span>Subtotal</span><span>{money(subtotal)}</span></div><div className="summary-line"><span>Pengiriman</span><span>{shipping?money(shipping):'Gratis'}</span></div><div className="summary-divider"/><div className="summary-line total"><b>Total</b><b>{money(total)}</b></div><div className="secure-note"><ShieldCheck size={16}/> Informasi pembayaran terlindungi</div></aside></div></main>;
+    return <main className="checkout-page"><div className="breadcrumbs"><button onClick={()=>go('home')}>Beranda</button><ChevronRight size={14}/><button onClick={()=>go('cart')}>Keranjang</button><ChevronRight size={14}/><span>Checkout</span></div><div className="page-heading"><div><span className="eyebrow">Satu langkah menuju rumah baru</span><h1>Checkout <em>yang tenang.</em></h1><p>Periksa detail, lalu kami siapkan pilihanmu.</p></div></div><div className="checkout-layout"><form className="checkout-main" id="checkout-form" onSubmit={(e) => { e.preventDefault(); if (stage === 'payment') void placeOrder(); }} noValidate><div className="checkout-steps">{steps.map((s,i)=><button key={s.key} className={`checkout-step ${stage===s.key?'active':''} ${steps.findIndex((x)=>x.key===stage)>i?'done':''}`} onClick={()=>setStage(s.key)}><span>{steps.findIndex((x)=>x.key===stage)>i?<Check size={15}/>:`0${i+1}`}</span>{s.label}</button>)}</div><section className="checkout-section" style={{ display: stage === 'address' ? undefined : 'none' }}><div className="checkout-title"><div><span className="eyebrow">Ke mana pilihanmu pergi?</span><h2>Alamat pengiriman</h2></div><button className="text-link" onClick={()=>setNotice('Formulir alamat baru segera tersedia.')}>+ Tambah alamat</button></div><label className="form-label">Nama penerima<input name="name" autoComplete="name" required maxLength={120}/></label><label className="form-label">Nomor telepon<input name="phone" type="tel" autoComplete="tel" required maxLength={30}/></label><label className="form-label">Alamat jalan<input name="street" autoComplete="street-address" required maxLength={250}/></label><div className="address-fields"><label className="form-label">Kota<input name="city" autoComplete="address-level2" required maxLength={120}/></label><label className="form-label">Provinsi<input name="province" autoComplete="address-level1" required maxLength={120}/></label></div><label className="form-label">Kode pos<input name="postalCode" autoComplete="postal-code" required maxLength={20}/></label><label className="form-label">Catatan kurir <span>opsional</span><textarea name="note" placeholder="Petunjuk pengantaran" rows={3} maxLength={1000}/></label></section>{stage==='shipping' && <section className="checkout-section"><div className="checkout-title"><div><span className="eyebrow">Dipilih sesuai kebutuhan</span><h2>Opsi pengiriman</h2></div></div><div className="shipping-option selected"><span className="radio-mark"/><Truck/><span><b>Pengiriman reguler</b><small>Ongkir dihitung server. Estimasi belum terhubung ke kurir.</small></span><strong>{shipping?money(shipping):'Gratis'}</strong></div><p className="form-hint">Pilihan kurir dan pelacakan real-time belum terintegrasi.</p></section>}{stage==='payment' && <section className="checkout-section"><div className="checkout-title"><div><span className="eyebrow">Pilihan pembayaran aman</span><h2>Metode Pembayaran Midtrans Snap</h2></div></div><div style={{ display: 'grid', gap: '10px', marginBottom: '15px' }}><div className="shipping-option selected"><CreditCard size={18}/><span><b>Metode Pembayaran Lengkap</b><small>QRIS (GoPay, ShopeePay), Virtual Account (BCA, Mandiri, BNI, BRI), Kartu Kredit/Debit</small></span></div></div><div className="payment-disclaimer"><ShieldCheck/> Pembayaran diproses aman melalui Midtrans Snap. Total dihitung dan diverifikasi otomatis oleh server.</div></section>}<div className="checkout-nav"><button className="text-link" onClick={()=>stage==='address'?go('cart'):setStage(stage==='payment'?'shipping':'address')}><ArrowLeft size={15}/> Kembali</button><button className="button primary" onClick={next} disabled={checkoutBusy}>{checkoutBusy?'Membuat pesanan…':stage==='payment'?'Bayar Sekarang via Midtrans':'Lanjut'} <ArrowRight size={16}/></button></div></form><aside className="summary-card"><span className="eyebrow">Pilihan di dalam keranjang</span><h2>Ringkasan pesanan</h2><div className="checkout-items">{cartItems.map((p)=><div className="checkout-item" key={p.id}>{photo(p)}<span><b>{p.name}</b><small>Jumlah: {cart[p.id]}</small></span><strong>{money(p.price*cart[p.id])}</strong></div>)}</div><div className="summary-line"><span>Subtotal</span><span>{money(subtotal)}</span></div><div className="summary-line"><span>Pengiriman</span><span>{shipping?money(shipping):'Gratis'}</span></div><div className="summary-divider"/><div className="summary-line total"><b>Total</b><b>{money(total)}</b></div><div className="secure-note"><ShieldCheck size={16}/> Informasi pembayaran terlindungi</div></aside></div></main>;
   }
   function Complete() {
     if (!createdOrder) return <main className="complete-page"><div className="empty-state"><PackageCheck/><h2>Belum ada pesanan</h2><p>Pesanan akan muncul di sini setelah checkout dibuat.</p><button className="button outline" onClick={()=>go('catalog')}>Jelajahi produk <ArrowRight size={16}/></button></div></main>;
@@ -660,6 +665,11 @@ export default function Sorelle() {
   }
   async function submitAuth(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const authForm = event.currentTarget;
+    const authData = new FormData(authForm);
+    const authEmail = String(authData.get('email') || '').trim();
+    const authPassword = String(authData.get('password') || '');
+    const authName = String(authData.get('fullName') || '').trim();
     if (!supabase) { setAuthMessage('Supabase belum dikonfigurasi. Periksa .env.local.'); return; }
     setAuthBusy(true);
     setAuthMessage('');
@@ -667,22 +677,24 @@ export default function Sorelle() {
       if (authMode === 'signup') {
         const { data, error } = await supabase.auth.signUp({ email: authEmail, password: authPassword, options: { data: { full_name: authName }, emailRedirectTo: `${window.location.origin}/` } });
         if (error) throw error;
-        if (!data.session) setAuthMessage('Akun dibuat. Periksa email untuk mengonfirmasi akun sebelum masuk.');
+        if (!data.session) { setAuthMessage('Akun dibuat. Periksa email untuk mengonfirmasi akun sebelum masuk.'); authForm.reset(); }
         else { setAuthMessage('Akun berhasil dibuat.'); go('account'); }
       } else if (authMode === 'update') {
         const { error } = await supabase.auth.updateUser({ password: authPassword });
         if (error) throw error;
         setAuthMessage('Kata sandi berhasil diperbarui.');
+        authForm.reset();
         setAuthMode('login');
-        setAuthPassword('');
       } else if (authMode === 'reset') {
         const { error } = await supabase.auth.resetPasswordForEmail(authEmail, { redirectTo: `${window.location.origin}/?password-recovery=1` });
         if (error) throw error;
         setAuthMessage('Jika alamat email terdaftar, tautan pemulihan akan dikirim.');
+        authForm.reset();
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
         if (error) throw error;
         setAuthMessage('Berhasil masuk.');
+        authForm.reset();
         go('account');
       }
     } catch (error) {
@@ -692,7 +704,7 @@ export default function Sorelle() {
     }
   }
   function Login() {
-    return <main className="auth-page"><div className="breadcrumbs"><button onClick={()=>go('home')}>Beranda</button><ChevronRight size={14}/><span>{authMode==='signup'?'Buat akun':'Masuk'}</span></div><section className="auth-layout"><div className="auth-visual"><img src="https://images.unsplash.com/photo-1600210492486-724fe5c67fb0?auto=format&fit=crop&w=1100&q=85" alt="Ruang keluarga hangat bernuansa alam"/><div><span className="eyebrow">Ruang yang terasa seperti rumah</span><h1>Hal-hal baik<br/>menemukan <em>rumahnya.</em></h1><p>Masuk untuk menyimpan pilihan dan mengikuti pesanan Sorelle.</p></div></div><div className="auth-panel"><span className="eyebrow">Senang melihatmu kembali</span><h2>{authMode==='signup'?'Buat ruangmu di Sorelle':authMode==='reset'?'Atur ulang kata sandi':authMode==='update'?'Buat kata sandi baru':'Masuk ke akunmu'}</h2><p>{authMode==='signup'?'Bergabung untuk menyimpan pilihan baikmu.':authMode==='reset'?'Kami akan mengirim tautan pemulihan ke emailmu.':authMode==='update'?'Pilih kata sandi baru untuk akunmu.':'Lanjutkan perjalanan pilihanmu.'}</p><form onSubmit={submitAuth} className="auth-form">{authMode==='signup'&&<label>Nama lengkap<input autoComplete="name" value={authName} onChange={(e)=>setAuthName(e.target.value)} required/></label>}{authMode!=='update'&&<label>Email<input type="email" autoComplete="email" value={authEmail} onChange={(e)=>setAuthEmail(e.target.value)} required/></label>}{authMode!=='reset'&&<label>Kata sandi<input type="password" autoComplete={authMode==='signup'||authMode==='update'?'new-password':'current-password'} minLength={8} value={authPassword} onChange={(e)=>setAuthPassword(e.target.value)} required/><small>Minimal 8 karakter.</small></label>}{authMode==='login'&&<button type="button" className="auth-forgot" onClick={()=>{setAuthMode('reset');setAuthMessage('');}}>Lupa kata sandi?</button>}<button className="button primary auth-submit" type="submit" disabled={authBusy}>{authBusy?'Memproses…':authMode==='signup'?'Buat akun':authMode==='reset'?'Kirim tautan pemulihan':authMode==='update'?'Simpan kata sandi':'Masuk'} <ArrowRight size={16}/></button></form>{authMessage&&<p className="auth-message" role="status">{authMessage}</p>}<div className="auth-switch">{authMode==='signup'?'Sudah punya akun?':authMode==='reset'||authMode==='update'?'Kembali ke masuk?':'Belum punya akun?'} <button onClick={()=>{setAuthMode(authMode==='login'?'signup':'login');setAuthMessage('');}}>{authMode==='login'?'Daftar': 'Masuk'}</button></div><div className="auth-safety"><ShieldCheck/> Kata sandi diproses aman oleh Supabase Auth.</div></div></section></main>;
+    return <main className="auth-page"><div className="breadcrumbs"><button onClick={()=>go('home')}>Beranda</button><ChevronRight size={14}/><span>{authMode==='signup'?'Buat akun':'Masuk'}</span></div><section className="auth-layout"><div className="auth-visual"><img src="https://images.unsplash.com/photo-1600210492486-724fe5c67fb0?auto=format&fit=crop&w=1100&q=85" alt="Ruang keluarga hangat bernuansa alam"/><div><span className="eyebrow">Ruang yang terasa seperti rumah</span><h1>Hal-hal baik<br/>menemukan <em>rumahnya.</em></h1><p>Masuk untuk menyimpan pilihan dan mengikuti pesanan Sorelle.</p></div></div><div className="auth-panel"><span className="eyebrow">Senang melihatmu kembali</span><h2>{authMode==='signup'?'Buat ruangmu di Sorelle':authMode==='reset'?'Atur ulang kata sandi':authMode==='update'?'Buat kata sandi baru':'Masuk ke akunmu'}</h2><p>{authMode==='signup'?'Bergabung untuk menyimpan pilihan baikmu.':authMode==='reset'?'Kami akan mengirim tautan pemulihan ke emailmu.':authMode==='update'?'Pilih kata sandi baru untuk akunmu.':'Lanjutkan perjalanan pilihanmu.'}</p><form onSubmit={submitAuth} className="auth-form">{authMode==='signup'&&<label>Nama lengkap<input name="fullName" autoComplete="name" required/></label>}{authMode!=='update'&&<label>Email<input name="email" type="email" autoComplete="email" required/></label>}{authMode!=='reset'&&<label>Kata sandi<input name="password" type="password" autoComplete={authMode==='signup'||authMode==='update'?'new-password':'current-password'} minLength={8} required/><small>Minimal 8 karakter.</small></label>}{authMode==='login'&&<button type="button" className="auth-forgot" onClick={()=>{setAuthMode('reset');setAuthMessage('');}}>Lupa kata sandi?</button>}<button className="button primary auth-submit" type="submit" disabled={authBusy}>{authBusy?'Memproses…':authMode==='signup'?'Buat akun':authMode==='reset'?'Kirim tautan pemulihan':authMode==='update'?'Simpan kata sandi':'Masuk'} <ArrowRight size={16}/></button></form>{authMessage&&<p className="auth-message" role="status">{authMessage}</p>}<div className="auth-switch">{authMode==='signup'?'Sudah punya akun?':authMode==='reset'||authMode==='update'?'Kembali ke masuk?':'Belum punya akun?'} <button onClick={()=>{setAuthMode(authMode==='login'?'signup':'login');setAuthMessage('');}}>{authMode==='login'?'Daftar': 'Masuk'}</button></div><div className="auth-safety"><ShieldCheck/> Kata sandi diproses aman oleh Supabase Auth.</div></div></section></main>;
   }
   function Account() {
     if (!authUser) return <main className="account-page"><div className="empty-state"><UserRound/><h2>Masuk untuk melihat akunmu</h2><p>Simpan alamat dan ikuti perjalanan pesanan Sorelle.</p><button className="button primary" onClick={()=>go('login')}>Masuk / daftar <ArrowRight size={16}/></button></div></main>;
